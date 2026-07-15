@@ -1,0 +1,13 @@
+{
+  "name": "livestorm-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard for Livestorm webinar stats (registration, attendance, engagement, conversion funnel)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

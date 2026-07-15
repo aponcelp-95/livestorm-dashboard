@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Livestorm Webinar Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>Webinar Dashboard</h1>
+    </div>
+    <div class="topbar-right">
+      <span id="status" class="status"></span>
+      <button id="theme-toggle" class="ghost-btn" title="Toggle light/dark" aria-label="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <section id="kpis" class="kpi-row" aria-label="Key metrics"></section>
+
+    <section class="grid-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>Registration vs. attendance over time</h2>
+          <span class="card-sub" id="trend-sub"></span>
+        </div>
+        <div id="trend-chart" class="chart"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2 id="detail-title">Conversion funnel</h2>
+          <span class="card-sub" id="detail-sub">Select a webinar below</span>
+        </div>
+        <div id="funnel-chart" class="chart"></div>
+        <div id="engagement-tiles" class="mini-kpis"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>All webinars</h2>
+        <span class="card-sub">Click a row for its funnel &amp; engagement</span>
+      </div>
+      <div class="table-wrap">
+        <table id="webinar-table">
+          <thead>
+            <tr>
+              <th scope="col">Webinar</th>
+              <th scope="col">Date</th>
+              <th scope="col" class="num">Registrants</th>
+              <th scope="col" class="num">Attendees</th>
+              <th scope="col" class="num">Attendance</th>
+              <th scope="col">Rate</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
