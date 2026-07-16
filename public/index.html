@@ -20,8 +20,15 @@
           <option value="26">Last 26 weeks</option>
           <option value="52">Last 52 weeks</option>
           <option value="0">All time</option>
+          <option value="custom">Custom range…</option>
         </select>
       </label>
+      <span id="custom-range" class="custom-range" hidden>
+        <input type="date" id="from" aria-label="From date" />
+        <span class="dash">–</span>
+        <input type="date" id="to" aria-label="To date" />
+        <button id="apply-range" class="apply-btn">Apply</button>
+      </span>
       <span id="status" class="status"></span>
       <button id="theme-toggle" class="ghost-btn" title="Toggle light/dark" aria-label="Toggle theme">◐</button>
     </div>
@@ -34,14 +41,22 @@
         <span class="card-sub" id="list-count"></span>
       </div>
       <input id="search" class="search" type="search" placeholder="Search webinars…" autocomplete="off" />
+      <div id="selbar" class="selbar" hidden>
+        <span id="selcount"></span>
+        <button id="clearsel" class="linkbtn">Clear</button>
+      </div>
       <ul id="webinar-list" class="webinar-list"></ul>
     </aside>
 
     <section class="detail">
-      <div id="detail-empty" class="card empty-card">
-        <div class="empty">Select a webinar to see its registration, attendance, engagement, and conversion funnel.</div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Registered vs. attended over time</h2>
+          <span class="card-sub" id="trend-sub"></span>
+        </div>
+        <div id="trend-chart" class="chart"></div>
       </div>
-      <div id="detail-content" hidden></div>
+      <div id="selection-panel"></div>
     </section>
   </main>
 

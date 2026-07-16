@@ -127,33 +127,118 @@ function toMs(v) {
   return Number.isNaN(p) ? null : p;
 }
 
-// A "webinar" = a Livestorm event. The list is kept LIGHT — no include=sessions —
-// because that combined call is what timed out on large workspaces. We fetch a
-// bounded number of event pages and window them to the recent period client-asked.
-async function getWebinarList({ weeks = 12 } = {}) {
-  const cutoff = weeks > 0 ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : 0;
-  const { data: events, truncated } = await livestormAll("/events", {
-    pageSize: 50,
-    maxPages: 12,
+// Run async fn over items with bounded concurrency (keeps us well under rate limits).
+async function mapPool(items, limit, fn) {
+  const results = new Array(items.length);
+  let i = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) {
+      const idx = i++;
+      results[idx] = await fn(items[idx], idx);
+    }
   });
+  await Promise.all(workers);
+  return results;
+}
 
-  const webinars = events.map((ev) => {
+const DAY = 24 * 60 * 60 * 1000;
+
+// Start-of-week (Monday, local server tz) in ms, for week-over-week bucketing.
+function weekStartMs(ms) {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  const day = (d.getDay() + 6) % 7; // Mon=0 … Sun=6
+  return d.getTime() - day * DAY;
+}
+
+function aggregateByWeek(sessions) {
+  const map = new Map();
+  for (const s of sessions) {
+    if (s.date == null) continue;
+    const wk = weekStartMs(s.date);
+    const cur = map.get(wk) || { week: wk, registrants: 0, attendees: 0, sessions: 0 };
+    cur.registrants += s.registrants;
+    cur.attendees += s.attendees;
+    cur.sessions += 1;
+    map.set(wk, cur);
+  }
+  return [...map.values()].sort((a, b) => a.week - b.week);
+}
+
+// Resolve the requested window into {start, end} in ms.
+function resolveWindow({ weeks, from, to }) {
+  const now = Date.now();
+  const fromMs = from != null && from !== "" ? toMs(from) : null;
+  const toMsVal = to != null && to !== "" ? toMs(to) : null;
+  if (fromMs != null || toMsVal != null) {
+    // Custom range; include the whole "to" day.
+    return { start: fromMs ?? 0, end: (toMsVal != null ? toMsVal + DAY - 1 : now) };
+  }
+  if (weeks > 0) return { start: now - weeks * 7 * DAY, end: now };
+  return { start: 0, end: now };
+}
+
+// A "webinar" = a Livestorm event. We fetch the event list light, then enrich each
+// event with its SESSIONS separately (bounded pages + concurrency + sparse fields) —
+// avoiding the single giant include=sessions call that timed out. From the sessions
+// we get the real latest-session date (for windowing) and week-over-week counts.
+async function getWebinarList({ weeks = 12, from = null, to = null } = {}) {
+  const { start, end } = resolveWindow({ weeks, from, to });
+  const { data: events } = await livestormAll("/events", { pageSize: 50, maxPages: 12 });
+
+  const MAX_EVENTS = 150;
+  const capped = events.slice(0, MAX_EVENTS);
+  // Sparse fieldset: only the session fields we need, so payloads stay small.
+  const SPARSE = "fields[sessions]=estimated_started_at,started_at,ended_at,registrants_count,attendees_count,status";
+
+  const enriched = await mapPool(capped, 6, async (ev) => {
     const a = ev.attributes || {};
-    // Events carry no single "session date"; use the best available event date.
-    const date = toMs(
-      a.estimated_started_at || a.published_at || a.updated_at || a.created_at
-    );
-    return { id: ev.id, title: a.title || "(untitled)", slug: a.slug, date };
+    let sessions = [];
+    try {
+      const r = await livestormAll(`/events/${ev.id}/sessions?${SPARSE}`, {
+        pageSize: 100,
+        maxPages: 6,
+      });
+      sessions = r.data.map((s) => {
+        const sa = s.attributes || {};
+        return {
+          date: toMs(sa.started_at || sa.estimated_started_at),
+          registrants: num(sa.registrants_count),
+          attendees: num(sa.attendees_count),
+        };
+      });
+    } catch (e) {
+      console.error(`[livestorm] sessions for event ${ev.id} failed: ${e.message}`);
+    }
+    return { id: ev.id, title: a.title || "(untitled)", slug: a.slug, sessions };
   });
 
-  const inWindow = cutoff > 0 ? webinars.filter((w) => (w.date || 0) >= cutoff) : webinars;
-  inWindow.sort((a, b) => (b.date || 0) - (a.date || 0));
+  const webinars = [];
+  const windowSessions = [];
+  for (const w of enriched) {
+    const inWin = w.sessions.filter((s) => s.date != null && s.date >= start && s.date <= end);
+    if (!inWin.length) continue;
+    const latest = inWin.reduce((m, s) => (s.date > m ? s.date : m), 0);
+    webinars.push({
+      id: w.id,
+      title: w.title,
+      slug: w.slug,
+      date: latest, // latest session date within the window
+      sessionCount: inWin.length,
+      registrants: inWin.reduce((t, s) => t + s.registrants, 0),
+      attendees: inWin.reduce((t, s) => t + s.attendees, 0),
+    });
+    for (const s of inWin) windowSessions.push(s);
+  }
+  webinars.sort((a, b) => (b.date || 0) - (a.date || 0));
+
   return {
-    weeks,
-    count: inWindow.length,
-    totalFetched: webinars.length,
-    truncated,
-    webinars: inWindow,
+    window: { start, end, weeks },
+    count: webinars.length,
+    totalEvents: events.length,
+    truncated: events.length > MAX_EVENTS,
+    webinars,
+    weekly: aggregateByWeek(windowSessions),
   };
 }
 
@@ -287,11 +372,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === "/api/webinars") {
-      const weeks = Number(url.searchParams.get("weeks"));
-      const w = Number.isFinite(weeks) ? weeks : 12;
-      console.log(`[api] /api/webinars requested (weeks=${w})`);
-      const data = await getWebinarList({ weeks: w });
-      console.log(`[api] /api/webinars -> ${data.count} in window / ${data.totalFetched} fetched`);
+      const weeksParam = Number(url.searchParams.get("weeks"));
+      const w = Number.isFinite(weeksParam) ? weeksParam : 12;
+      const from = url.searchParams.get("from");
+      const to = url.searchParams.get("to");
+      console.log(`[api] /api/webinars requested (weeks=${w}, from=${from}, to=${to})`);
+      const data = await getWebinarList({ weeks: w, from, to });
+      console.log(`[api] /api/webinars -> ${data.count} webinars in window / ${data.totalEvents} events`);
       return sendJSON(res, 200, data);
     }
 
