@@ -52,7 +52,7 @@ function attachHovers(root) {
 // ---------- state ----------
 let STATE = {
   webinars: [],
-  weekly: [],
+  sessions: [],
   selected: new Set(),
   weeks: 12,
   from: "",
@@ -99,7 +99,7 @@ async function loadList() {
   try {
     const data = await fetchJSON(listUrl());
     STATE.webinars = data.webinars || [];
-    STATE.weekly = data.weekly || [];
+    STATE.sessions = data.sessions || [];
     STATE.details.clear();
     // Drop selections no longer in the window.
     const ids = new Set(STATE.webinars.map((w) => w.id));
@@ -167,25 +167,54 @@ function toggleSelect(id) {
   if (STATE.selected.has(id)) STATE.selected.delete(id);
   else STATE.selected.add(id);
   renderList();
+  renderTrend();
   renderSelection();
 }
 
 $("#clearsel").addEventListener("click", () => {
   STATE.selected.clear();
   renderList();
+  renderTrend();
   renderSelection();
 });
 
 // ---------- week-over-week trend ----------
+const DAY = 24 * 60 * 60 * 1000;
+function weekStartMs(ms) {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  const day = (d.getDay() + 6) % 7; // Mon=0 … Sun=6
+  return d.getTime() - day * DAY;
+}
+function aggregateByWeek(sessions) {
+  const map = new Map();
+  for (const s of sessions) {
+    if (s.date == null) continue;
+    const wk = weekStartMs(s.date);
+    const cur = map.get(wk) || { week: wk, registrants: 0, attendees: 0, sessions: 0 };
+    cur.registrants += s.registrants;
+    cur.attendees += s.attendees;
+    cur.sessions += 1;
+    map.set(wk, cur);
+  }
+  return [...map.values()].sort((a, b) => a.week - b.week);
+}
+
 function renderTrend() {
   const el = $("#trend-chart");
-  const data = STATE.weekly;
-  if (!data || !data.length) {
+  // Filter to selected webinars if any are selected; otherwise the whole window.
+  const filtered = STATE.selected.size
+    ? STATE.sessions.filter((s) => STATE.selected.has(s.eventId))
+    : STATE.sessions;
+  const data = aggregateByWeek(filtered);
+  if (!data.length) {
     el.innerHTML = `<div class="empty">No session data in this window.</div>`;
     $("#trend-sub").textContent = "";
     return;
   }
-  $("#trend-sub").textContent = `${data.length} week${data.length === 1 ? "" : "s"}`;
+  $("#trend-sub").textContent = STATE.selected.size
+    ? `${STATE.selected.size} selected · ${data.length} week${data.length === 1 ? "" : "s"}`
+    : `${data.length} week${data.length === 1 ? "" : "s"}`;
 
   const W = 660, H = 300, padL = 46, padR = 12, padT = 14, padB = 48;
   const plotW = W - padL - padR, plotH = H - padT - padB;

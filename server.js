@@ -233,7 +233,7 @@ async function getWebinarList({ weeks = 12, from = null, to = null } = {}) {
         registrants: inWin.reduce((t, s) => t + s.registrants, 0),
         attendees: inWin.reduce((t, s) => t + s.attendees, 0),
       });
-      for (const s of inWin) windowSessions.push(s);
+      for (const s of inWin) windowSessions.push({ eventId: w.id, ...s });
     } else {
       // No readable session dates — fall back to the event's own date so the
       // webinar still appears (degrades to the previous working behavior).
@@ -258,6 +258,7 @@ async function getWebinarList({ weeks = 12, from = null, to = null } = {}) {
     truncated: events.length > MAX_EVENTS,
     usedFallback: fellBack > 0,
     webinars,
+    sessions: windowSessions, // {eventId, date, registrants, attendees} — client aggregates by week
     weekly: aggregateByWeek(windowSessions),
   };
 }
