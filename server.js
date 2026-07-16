@@ -188,55 +188,75 @@ async function getWebinarList({ weeks = 12, from = null, to = null } = {}) {
 
   const MAX_EVENTS = 150;
   const capped = events.slice(0, MAX_EVENTS);
-  // Sparse fieldset: only the session fields we need, so payloads stay small.
-  const SPARSE = "fields[sessions]=estimated_started_at,started_at,ended_at,registrants_count,attendees_count,status";
 
   const enriched = await mapPool(capped, 6, async (ev) => {
     const a = ev.attributes || {};
+    // Fallback date from the event itself, used if we can't read session dates.
+    const eventDate = toMs(a.estimated_started_at || a.published_at || a.updated_at || a.created_at);
     let sessions = [];
     try {
-      const r = await livestormAll(`/events/${ev.id}/sessions?${SPARSE}`, {
-        pageSize: 100,
-        maxPages: 6,
-      });
-      sessions = r.data.map((s) => {
-        const sa = s.attributes || {};
-        return {
-          date: toMs(sa.started_at || sa.estimated_started_at),
-          registrants: num(sa.registrants_count),
-          attendees: num(sa.attendees_count),
-        };
-      });
+      // Same JSON:API include pattern the detail view uses (known-good path).
+      const r = await livestorm(`/events/${ev.id}?include=sessions`);
+      const inc = r.included || [];
+      sessions = inc
+        .filter((x) => x.type === "sessions")
+        .map((s) => {
+          const sa = s.attributes || {};
+          return {
+            date: toMs(sa.started_at || sa.estimated_started_at || sa.ended_at),
+            registrants: num(sa.registrants_count),
+            attendees: num(sa.attendees_count),
+          };
+        });
     } catch (e) {
       console.error(`[livestorm] sessions for event ${ev.id} failed: ${e.message}`);
     }
-    return { id: ev.id, title: a.title || "(untitled)", slug: a.slug, sessions };
+    return { id: ev.id, title: a.title || "(untitled)", slug: a.slug, sessions, eventDate };
   });
 
   const webinars = [];
   const windowSessions = [];
+  let withSessionDates = 0;
+  let fellBack = 0;
   for (const w of enriched) {
-    const inWin = w.sessions.filter((s) => s.date != null && s.date >= start && s.date <= end);
-    if (!inWin.length) continue;
-    const latest = inWin.reduce((m, s) => (s.date > m ? s.date : m), 0);
-    webinars.push({
-      id: w.id,
-      title: w.title,
-      slug: w.slug,
-      date: latest, // latest session date within the window
-      sessionCount: inWin.length,
-      registrants: inWin.reduce((t, s) => t + s.registrants, 0),
-      attendees: inWin.reduce((t, s) => t + s.attendees, 0),
-    });
-    for (const s of inWin) windowSessions.push(s);
+    const dated = w.sessions.filter((s) => s.date != null);
+    if (dated.length) {
+      // We have real session dates — window by them.
+      const inWin = dated.filter((s) => s.date >= start && s.date <= end);
+      if (!inWin.length) continue;
+      withSessionDates++;
+      const latest = inWin.reduce((m, s) => (s.date > m ? s.date : m), 0);
+      webinars.push({
+        id: w.id, title: w.title, slug: w.slug,
+        date: latest,
+        sessionCount: inWin.length,
+        registrants: inWin.reduce((t, s) => t + s.registrants, 0),
+        attendees: inWin.reduce((t, s) => t + s.attendees, 0),
+      });
+      for (const s of inWin) windowSessions.push(s);
+    } else {
+      // No readable session dates — fall back to the event's own date so the
+      // webinar still appears (degrades to the previous working behavior).
+      if (w.eventDate == null || w.eventDate < start || w.eventDate > end) continue;
+      fellBack++;
+      webinars.push({
+        id: w.id, title: w.title, slug: w.slug,
+        date: w.eventDate,
+        sessionCount: 0,
+        registrants: 0,
+        attendees: 0,
+      });
+    }
   }
   webinars.sort((a, b) => (b.date || 0) - (a.date || 0));
+  console.log(`[api] window: ${withSessionDates} by session date, ${fellBack} by event-date fallback`);
 
   return {
     window: { start, end, weeks },
     count: webinars.length,
     totalEvents: events.length,
     truncated: events.length > MAX_EVENTS,
+    usedFallback: fellBack > 0,
     webinars,
     weekly: aggregateByWeek(windowSessions),
   };

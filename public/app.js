@@ -104,7 +104,9 @@ async function loadList() {
     // Drop selections no longer in the window.
     const ids = new Set(STATE.webinars.map((w) => w.id));
     STATE.selected = new Set([...STATE.selected].filter((id) => ids.has(id)));
-    $("#status").textContent = "";
+    $("#status").textContent = data.usedFallback
+      ? "Some dates approximate (session data unavailable)"
+      : "";
     $("#list-count").textContent = `${data.count} webinar${data.count === 1 ? "" : "s"}`;
     renderList();
     renderTrend();
