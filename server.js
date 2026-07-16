@@ -289,7 +289,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Livestorm dashboard on http://localhost:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Livestorm dashboard listening on 0.0.0.0:${PORT}`);
   if (!API_KEY) console.warn("⚠  LIVESTORM_API_KEY not set — API routes will return 503.");
 });
