@@ -13,52 +13,35 @@
       <h1>Webinar Dashboard</h1>
     </div>
     <div class="topbar-right">
+      <label class="range">
+        <span>Window</span>
+        <select id="range">
+          <option value="12" selected>Last 12 weeks</option>
+          <option value="26">Last 26 weeks</option>
+          <option value="52">Last 52 weeks</option>
+          <option value="0">All time</option>
+        </select>
+      </label>
       <span id="status" class="status"></span>
       <button id="theme-toggle" class="ghost-btn" title="Toggle light/dark" aria-label="Toggle theme">◐</button>
     </div>
   </header>
 
-  <main id="app">
-    <section id="kpis" class="kpi-row" aria-label="Key metrics"></section>
-
-    <section class="grid-2">
-      <div class="card">
-        <div class="card-head">
-          <h2>Registration vs. attendance over time</h2>
-          <span class="card-sub" id="trend-sub"></span>
-        </div>
-        <div id="trend-chart" class="chart"></div>
-      </div>
-      <div class="card">
-        <div class="card-head">
-          <h2 id="detail-title">Conversion funnel</h2>
-          <span class="card-sub" id="detail-sub">Select a webinar below</span>
-        </div>
-        <div id="funnel-chart" class="chart"></div>
-        <div id="engagement-tiles" class="mini-kpis"></div>
-      </div>
-    </section>
-
-    <section class="card">
+  <main class="layout">
+    <aside class="picker card">
       <div class="card-head">
-        <h2>All webinars</h2>
-        <span class="card-sub">Click a row for its funnel &amp; engagement</span>
+        <h2>Webinars</h2>
+        <span class="card-sub" id="list-count"></span>
       </div>
-      <div class="table-wrap">
-        <table id="webinar-table">
-          <thead>
-            <tr>
-              <th scope="col">Webinar</th>
-              <th scope="col">Date</th>
-              <th scope="col" class="num">Registrants</th>
-              <th scope="col" class="num">Attendees</th>
-              <th scope="col" class="num">Attendance</th>
-              <th scope="col">Rate</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+      <input id="search" class="search" type="search" placeholder="Search webinars…" autocomplete="off" />
+      <ul id="webinar-list" class="webinar-list"></ul>
+    </aside>
+
+    <section class="detail">
+      <div id="detail-empty" class="card empty-card">
+        <div class="empty">Select a webinar to see its registration, attendance, engagement, and conversion funnel.</div>
       </div>
+      <div id="detail-content" hidden></div>
     </section>
   </main>
 

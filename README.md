@@ -7,13 +7,15 @@ serves a static dashboard.
 
 ## What it shows
 
-- **KPI row** — total webinars, registrants, attendees, and average attendance rate.
-- **Registration vs. attendance over time** — grouped bars per webinar (hover for detail).
-- **Per-webinar table** — every webinar ranked by date, with an attendance-rate bar.
-- **Conversion funnel** (per webinar) — Registered → Attended → Engaged → Stayed to end.
-- **Engagement tiles** (per webinar) — avg watch time, chat messages, questions, poll votes.
+Pick a webinar first (fast, light list), then load its full stats on demand — this
+keeps every API call small and bounded so the dashboard never hangs on large
+workspaces.
 
-Click any webinar (row or bar) to load its funnel and engagement.
+- **Webinar picker** — recent webinars within a selectable window (12 / 26 / 52
+  weeks, or all time), searchable.
+- **Per-webinar KPIs** — registrants, attendees, attendance rate, avg watch time.
+- **Conversion funnel** — Registered → Attended → Engaged → Stayed to end.
+- **Engagement** — chat messages, questions, poll votes, upvotes.
 
 ## Run locally
 
@@ -35,13 +37,19 @@ Get your token in Livestorm under **Settings → Account → Integrations → AP
 
 ## Data model / API mapping
 
-Data comes from the Livestorm REST API (`https://api.livestorm.co/v1`):
+Data comes from the Livestorm REST API (`https://api.livestorm.co/v1`). Timestamps
+are returned as Unix epoch **seconds** and normalized to ms server-side.
 
-- `GET /events?include=sessions` — webinars + their sessions
-  (`registrants_count`, `attendees_count`, `duration`, `status`, `started_at`).
-- `GET /sessions/{id}/people?filter[role]=participant` — per-attendee fields used
-  for engagement/funnel: `attended`, `attendance_rate`, `attendance_duration`,
-  `messages_count`, `questions_count`, `votes_count`, `up_votes_count`.
+Server routes:
+
+- `GET /api/webinars?weeks=N` — light list (no `include=sessions`, so it's fast),
+  windowed to the last N weeks (0 = all). Built from `GET /events`.
+- `GET /api/webinar/:id` — full stats for one webinar, built from
+  `GET /events/{id}?include=sessions` (`registrants_count`, `attendees_count`,
+  `duration`, `status`, `started_at`) plus
+  `GET /sessions/{id}/people?filter[role]=participant` for per-attendee fields:
+  `attended`, `attendance_rate`, `attendance_duration`, `messages_count`,
+  `questions_count`, `votes_count`, `up_votes_count`.
 
 Funnel definitions: **Registered** = participants on the session; **Attended** =
 `attended` or watch time > 0; **Engaged** = posted a message, question, or vote;
@@ -49,6 +57,12 @@ Funnel definitions: **Registered** = participants on the session; **Attended** =
 
 ## Notes
 
-- The event list pages through up to 40 pages (2,000 webinars); beyond that the UI
-  shows a "truncated" note rather than silently dropping data.
-- On rate-limit (HTTP 429) the server backs off and retries.
+- The webinar list fetches up to 12 event pages (600 webinars) then windows them
+  by date. The window date uses the event's own date (`estimated_started_at` →
+  `published_at` → `updated_at` → `created_at`), since the list call intentionally
+  skips per-session data for speed.
+- Every outbound Livestorm request has a 15s timeout; failures surface as an error
+  in the UI instead of hanging. On rate-limit (HTTP 429) the server backs off and
+  retries.
+- Server logs (`[api]` / `[livestorm]` lines) are visible in deploybay's Live logs
+  for debugging.

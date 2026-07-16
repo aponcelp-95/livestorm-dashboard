@@ -127,124 +127,111 @@ function toMs(v) {
   return Number.isNaN(p) ? null : p;
 }
 
-// Build the overview: one entry per event, with per-session detail.
-async function getEventsOverview() {
-  const { data: events, included, truncated } = await livestormAll(
-    "/events?include=sessions",
-    { pageSize: 50 }
-  );
-
-  const sessionsById = new Map();
-  for (const inc of included) {
-    if (inc.type === "sessions") sessionsById.set(inc.id, inc);
-  }
-
-  const result = events.map((ev) => {
-    const a = ev.attributes || {};
-    const rels = ev.relationships?.sessions?.data || [];
-    const sessions = rels
-      .map((ref) => sessionsById.get(ref.id))
-      .filter(Boolean)
-      .map((s) => {
-        const sa = s.attributes || {};
-        const registrants = num(sa.registrants_count);
-        const attendees = num(sa.attendees_count);
-        return {
-          id: s.id,
-          status: sa.status,
-          started_at: toMs(sa.started_at || sa.estimated_started_at),
-          ended_at: toMs(sa.ended_at),
-          duration: num(sa.duration),
-          registrants,
-          attendees,
-          attendance_rate: registrants > 0 ? attendees / registrants : 0,
-        };
-      });
-
-    const registrants = sessions.reduce((t, s) => t + s.registrants, 0);
-    const attendees = sessions.reduce((t, s) => t + s.attendees, 0);
-    const dates = sessions
-      .map((s) => s.started_at)
-      .filter((v) => v != null)
-      .sort((a, b) => a - b);
-
-    return {
-      id: ev.id,
-      title: a.title || "(untitled)",
-      slug: a.slug,
-      sessionCount: sessions.length,
-      registrants,
-      attendees,
-      attendance_rate: registrants > 0 ? attendees / registrants : 0,
-      firstDate: dates[0] || null,
-      lastDate: dates[dates.length - 1] || null,
-      sessions,
-    };
+// A "webinar" = a Livestorm event. The list is kept LIGHT — no include=sessions —
+// because that combined call is what timed out on large workspaces. We fetch a
+// bounded number of event pages and window them to the recent period client-asked.
+async function getWebinarList({ weeks = 12 } = {}) {
+  const cutoff = weeks > 0 ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : 0;
+  const { data: events, truncated } = await livestormAll("/events", {
+    pageSize: 50,
+    maxPages: 12,
   });
 
-  // Newest first by most recent session date.
-  result.sort((a, b) => (b.lastDate || 0) - (a.lastDate || 0));
-  return { events: result, truncated };
+  const webinars = events.map((ev) => {
+    const a = ev.attributes || {};
+    // Events carry no single "session date"; use the best available event date.
+    const date = toMs(
+      a.estimated_started_at || a.published_at || a.updated_at || a.created_at
+    );
+    return { id: ev.id, title: a.title || "(untitled)", slug: a.slug, date };
+  });
+
+  const inWindow = cutoff > 0 ? webinars.filter((w) => (w.date || 0) >= cutoff) : webinars;
+  inWindow.sort((a, b) => (b.date || 0) - (a.date || 0));
+  return {
+    weeks,
+    count: inWindow.length,
+    totalFetched: webinars.length,
+    truncated,
+    webinars: inWindow,
+  };
 }
 
-// Engagement + funnel for one event: aggregate per-person data across its sessions.
-async function getEventEngagement(eventId) {
+// Full stats for ONE webinar (event): registration/attendance from its sessions,
+// engagement + funnel from per-person data. Bounded to a single event, so fast.
+async function getWebinarDetail(eventId) {
   const ev = await livestorm(`/events/${eventId}?include=sessions`);
+  const a = ev.data?.attributes || {};
   const included = ev.included || [];
-  const sessionIds = included
+  const sessions = included
     .filter((i) => i.type === "sessions")
-    .map((i) => i.id);
+    .map((s) => {
+      const sa = s.attributes || {};
+      return {
+        id: s.id,
+        status: sa.status,
+        started_at: toMs(sa.started_at || sa.estimated_started_at),
+        duration: num(sa.duration),
+        registrants: num(sa.registrants_count),
+        attendees: num(sa.attendees_count),
+      };
+    });
 
+  const registrants = sessions.reduce((t, s) => t + s.registrants, 0);
+  const attendees = sessions.reduce((t, s) => t + s.attendees, 0);
+  const dates = sessions.map((s) => s.started_at).filter((v) => v != null).sort((x, y) => x - y);
+
+  // Per-person aggregation for engagement + funnel.
   const agg = {
-    participants: 0,
-    attended: 0,
-    stayedToEnd: 0, // attendance_rate >= STAYED_TO_END_THRESHOLD
-    engaged: 0, // posted a message, asked a question, or voted
-    totalWatchSeconds: 0,
-    messages: 0,
-    questions: 0,
-    votes: 0,
-    upVotes: 0,
-    registrants: 0,
+    participants: 0, attended: 0, stayedToEnd: 0, engaged: 0,
+    totalWatchSeconds: 0, messages: 0, questions: 0, votes: 0, upVotes: 0,
   };
-
-  for (const sid of sessionIds) {
+  for (const s of sessions) {
     const { data: people } = await livestormAll(
-      `/sessions/${sid}/people?filter[role]=participant`,
-      { pageSize: 100 }
+      `/sessions/${s.id}/people?filter[role]=participant`,
+      { pageSize: 100, maxPages: 20 }
     );
     for (const p of people) {
       const pa = p.attributes || {};
       agg.participants++;
-      const attended = pa.attended === true || num(pa.attendance_duration) > 0;
-      if (attended) {
+      const didAttend = pa.attended === true || num(pa.attendance_duration) > 0;
+      if (didAttend) {
         agg.attended++;
         agg.totalWatchSeconds += num(pa.attendance_duration);
         if (num(pa.attendance_rate) >= STAYED_TO_END_THRESHOLD) agg.stayedToEnd++;
       }
-      const msgs = num(pa.messages_count);
-      const qs = num(pa.questions_count);
-      const vts = num(pa.votes_count);
-      agg.messages += msgs;
-      agg.questions += qs;
-      agg.votes += vts;
-      agg.upVotes += num(pa.up_votes_count);
+      const msgs = num(pa.messages_count), qs = num(pa.questions_count), vts = num(pa.votes_count);
+      agg.messages += msgs; agg.questions += qs; agg.votes += vts; agg.upVotes += num(pa.up_votes_count);
       if (msgs + qs + vts > 0) agg.engaged++;
     }
   }
 
+  // Headline counts prefer authoritative session counts, falling back to people.
+  const registeredBase = registrants || agg.participants;
+  const attendedBase = attendees || agg.attended;
+  // Keep the funnel monotonic: later stages can't exceed the attended base.
+  const engaged = Math.min(agg.engaged, attendedBase);
+  const stayed = Math.min(agg.stayedToEnd, attendedBase);
   const avgWatchSeconds = agg.attended > 0 ? agg.totalWatchSeconds / agg.attended : 0;
+
   return {
-    eventId,
-    ...agg,
-    // registrants come from session counts (people list = registrants); use participants as the base.
-    registrants: agg.participants,
+    id: eventId,
+    title: a.title || "(untitled)",
+    date: dates[dates.length - 1] || null,
+    sessionCount: sessions.length,
+    registrants: registeredBase,
+    attendees: attendedBase,
+    attendance_rate: registeredBase > 0 ? attendedBase / registeredBase : 0,
     avgWatchSeconds,
+    messages: agg.messages,
+    questions: agg.questions,
+    votes: agg.votes,
+    upVotes: agg.upVotes,
     funnel: [
-      { stage: "Registered", value: agg.participants },
-      { stage: "Attended", value: agg.attended },
-      { stage: "Engaged", value: agg.engaged },
-      { stage: "Stayed to end", value: agg.stayedToEnd },
+      { stage: "Registered", value: registeredBase },
+      { stage: "Attended", value: attendedBase },
+      { stage: "Engaged", value: engaged },
+      { stage: "Stayed to end", value: stayed },
     ],
   };
 }
@@ -299,16 +286,21 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    if (pathname === "/api/events") {
-      console.log("[api] /api/events requested");
-      const data = await getEventsOverview();
-      console.log(`[api] /api/events -> ${data.events.length} events`);
+    if (pathname === "/api/webinars") {
+      const weeks = Number(url.searchParams.get("weeks"));
+      const w = Number.isFinite(weeks) ? weeks : 12;
+      console.log(`[api] /api/webinars requested (weeks=${w})`);
+      const data = await getWebinarList({ weeks: w });
+      console.log(`[api] /api/webinars -> ${data.count} in window / ${data.totalFetched} fetched`);
       return sendJSON(res, 200, data);
     }
 
-    const engMatch = pathname.match(/^\/api\/event\/([^/]+)\/engagement$/);
-    if (engMatch) {
-      const data = await getEventEngagement(decodeURIComponent(engMatch[1]));
+    const detailMatch = pathname.match(/^\/api\/webinar\/([^/]+)$/);
+    if (detailMatch) {
+      const id = decodeURIComponent(detailMatch[1]);
+      console.log(`[api] /api/webinar/${id} requested`);
+      const data = await getWebinarDetail(id);
+      console.log(`[api] /api/webinar/${id} -> ${data.registrants} reg / ${data.attendees} att`);
       return sendJSON(res, 200, data);
     }
 
