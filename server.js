@@ -39,13 +39,28 @@ async function livestorm(endpoint, { retries = 3 } = {}) {
   const url = endpoint.startsWith("http")
     ? endpoint
     : `${LIVESTORM_BASE}${endpoint}`;
+  console.log(`[livestorm] GET ${url}`);
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: API_KEY,
-        Accept: "application/vnd.api+json",
-      },
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: API_KEY,
+          Accept: "application/vnd.api+json",
+        },
+        signal: controller.signal,
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      const reason = e.name === "AbortError" ? "timed out after 15s" : e.message;
+      console.error(`[livestorm] request failed (${url}): ${reason}`);
+      const err = new Error(`Could not reach Livestorm API (${reason}). Check outbound network/egress from the container.`);
+      err.status = 502;
+      throw err;
+    }
+    clearTimeout(timer);
     if (res.status === 429) {
       // Rate limited — back off and retry.
       const wait = Number(res.headers.get("retry-after")) * 1000 || 1000 * (attempt + 1);
@@ -98,6 +113,20 @@ function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Livestorm returns timestamps as Unix epoch seconds. Normalize any of
+// {seconds, milliseconds, ISO string} to milliseconds (or null).
+function toMs(v) {
+  if (v == null || v === "") return null;
+  if (typeof v === "number") return v < 1e12 ? v * 1000 : v;
+  const s = String(v).trim();
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    return n < 1e12 ? n * 1000 : n;
+  }
+  const p = Date.parse(s);
+  return Number.isNaN(p) ? null : p;
+}
+
 // Build the overview: one entry per event, with per-session detail.
 async function getEventsOverview() {
   const { data: events, included, truncated } = await livestormAll(
@@ -123,8 +152,8 @@ async function getEventsOverview() {
         return {
           id: s.id,
           status: sa.status,
-          started_at: sa.started_at || sa.estimated_started_at || null,
-          ended_at: sa.ended_at || null,
+          started_at: toMs(sa.started_at || sa.estimated_started_at),
+          ended_at: toMs(sa.ended_at),
           duration: num(sa.duration),
           registrants,
           attendees,
@@ -134,7 +163,10 @@ async function getEventsOverview() {
 
     const registrants = sessions.reduce((t, s) => t + s.registrants, 0);
     const attendees = sessions.reduce((t, s) => t + s.attendees, 0);
-    const dates = sessions.map((s) => s.started_at).filter(Boolean).sort();
+    const dates = sessions
+      .map((s) => s.started_at)
+      .filter((v) => v != null)
+      .sort((a, b) => a - b);
 
     return {
       id: ev.id,
@@ -151,7 +183,7 @@ async function getEventsOverview() {
   });
 
   // Newest first by most recent session date.
-  result.sort((a, b) => (b.lastDate || "").localeCompare(a.lastDate || ""));
+  result.sort((a, b) => (b.lastDate || 0) - (a.lastDate || 0));
   return { events: result, truncated };
 }
 
@@ -268,7 +300,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === "/api/events") {
+      console.log("[api] /api/events requested");
       const data = await getEventsOverview();
+      console.log(`[api] /api/events -> ${data.events.length} events`);
       return sendJSON(res, 200, data);
     }
 
